@@ -2,14 +2,6 @@ import { HttpException, Injectable, UnauthorizedException } from '@nestjs/common
 import { addMilliseconds } from 'date-fns'
 import ms, { StringValue } from 'ms'
 import {
-  ForgotPasswordBodyType,
-  LoginBodyType,
-  RefreshTokenBodyType,
-  RegisterBodyType,
-  SendOTPBodyType,
-} from 'src/routes/auth/auth.model'
-import { AuthRepository } from 'src/routes/auth/auth.repo'
-import {
   EmailAlreadyExistsException,
   EmailNotFoundException,
   FailedToSendOTPException,
@@ -20,7 +12,17 @@ import {
   OTPExpiredException,
   RefreshTokenAlreadyUsedException,
   TOTPAlreadyEnabledException,
-} from 'src/routes/auth/error.model'
+  TOTPNotEnabledException,
+} from 'src/routes/auth/auth.error'
+import {
+  DisableTwoFactorBodyType,
+  ForgotPasswordBodyType,
+  LoginBodyType,
+  RefreshTokenBodyType,
+  RegisterBodyType,
+  SendOTPBodyType,
+} from 'src/routes/auth/auth.model'
+import { AuthRepository } from 'src/routes/auth/auth.repo'
 import { RolesService } from 'src/routes/auth/roles.service'
 import envConfig from 'src/shared/config'
 import { TypeOfVerificationCode, TypeOfVerificationCodeType } from 'src/shared/constants/auth.constant'
@@ -334,6 +336,48 @@ export class AuthService {
     return {
       secret,
       uri,
+    }
+  }
+
+  async disableTwoFactorAuth(data: DisableTwoFactorBodyType & { userId: number }) {
+    const { userId, totpCode, code } = data
+
+    //Lấy thông tin user, kiểm tra xem user có tồn tại hay không, và xem họ đã bật 2FA chưa
+    const user = await this.sharedUserRepository.findUnique({
+      id: userId,
+    })
+    if (!user) {
+      throw EmailNotFoundException
+    }
+
+    if (!user.totpSecret) {
+      throw TOTPNotEnabledException
+    }
+
+    //2. Kiểm tra mã TOTP có hợp lệ hay không
+    if (totpCode) {
+      const isValid = this.twoFactorService.verifyTOTP({
+        email: user.email,
+        secret: user.totpSecret,
+        token: totpCode,
+      })
+      if (!isValid) {
+        throw InvalidTOTPException
+      }
+    } else if (code) {
+      //3. Kiểm tra mã OTP có hợp lệ không
+      await this.validateVerificationCode({
+        email: user.email,
+        code,
+        type: TypeOfVerificationCode.DISABLE_2FA,
+      })
+    }
+
+    //4.Cập nhật lại secret thành null để tắt 2FA và xóa đi OTP nếu có
+    await this.authRepository.updateUser({ id: userId }, { totpSecret: null })
+    //5. Trả về thông báo tắt 2FA thành công
+    return {
+      message: 'Tắt 2FA thành công',
     }
   }
 }
